@@ -60,9 +60,13 @@ class MCPGateway(Node):
         for key, val in args.items():
             setattr(req_type, key, val)
 
-        future = client.call_async(req_type)
-        await asyncio.wrap_future(future)
-        return future.result().__dict__
+        try:
+            future = client.call_async(req_type)
+            await asyncio.wait_for(asyncio.wrap_future(future), timeout=3.0)
+            return future.result().__dict__
+        except asyncio.TimeoutError:
+            self.get_logger().error(f'Service {name} call timed out after 3 seconds.')
+            return {"error": f"Service call to {name} timed out."}
 
     async def run_action(self, name: str, args: Dict[str, Any], stream_queue: asyncio.Queue):
         from rclpy.action import GoalResponse, CancelResponse

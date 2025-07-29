@@ -1,0 +1,7 @@
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Python virtual environment
+.venv/

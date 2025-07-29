@@ -13,11 +13,15 @@ import os
 mcp = FastMCP("ROS2 MCP Gateway")
 
 class MCPGateway(Node):
-    def __init__(self, name: str, service_configs: Dict[str, Dict[str, Any]], action_configs: Dict[str, Dict[str, Any]], topic_configs: Dict[str, Dict[str, Any]]):
+    def __init__(self, name: str):
         super().__init__(name)
-        self.service_configs = service_configs
-        self.action_configs = action_configs
-        self.topic_configs = topic_configs
+        self.declare_parameter('service_configs', '{}')
+        self.declare_parameter('action_configs', '{}')
+        self.declare_parameter('topic_configs', '{}')
+
+        self.service_configs = self.get_parameter('service_configs').value
+        self.action_configs = self.get_parameter('action_configs').value
+        self.topic_configs = self.get_parameter('topic_configs').value
         self.mcp_services = {}
         self.mcp_actions = {}
         self.mcp_latest_msgs = {}
@@ -103,25 +107,8 @@ def main():
     rclpy.init()
 
     global ros_node
-    service_defs = {
-        "get_status": {
-            "type": "my_package/srv/GetStatus",
-            "description": "Retrieve current robot system status."
-        }
-    }
-    action_defs = {
-        "navigate_to": {
-            "type": "my_package/action/Navigate",
-            "description": "Navigate the robot to a given target pose."
-        }
-    }
-    topic_defs = {
-        "status": {
-            "type": "my_package/msg/Status",
-            "description": "Get the latest system status message."
-        }
-    }
-    ros_node = MCPGateway("ros2_mcp_gateway", service_defs, action_defs, topic_defs)
+    
+    ros_node = MCPGateway("ros2_mcp_gateway")
 
     def create_service_tool(name, meta):
         @mcp.tool(name=name, description=meta['description'])
@@ -129,7 +116,7 @@ def main():
             return await ros_node.call_service(name, args)
         return service_tool
 
-    for name, meta in service_defs.items():
+    for name, meta in ros_node.service_configs.items():
         create_service_tool(name, meta)
 
     def create_action_tool(name, meta):
@@ -138,7 +125,7 @@ def main():
             await ros_node.run_action(name, args, stream_queue)
         return action_tool
 
-    for name, meta in action_defs.items():
+    for name, meta in ros_node.action_configs.items():
         create_action_tool(name, meta)
 
     def create_topic_tool(name, meta):
@@ -147,7 +134,7 @@ def main():
             return await ros_node.get_latest_topic(name)
         return topic_tool
 
-    for name, meta in topic_defs.items():
+    for name, meta in ros_node.topic_configs.items():
         create_topic_tool(name, meta)
 
     loop = asyncio.get_event_loop()
@@ -155,7 +142,7 @@ def main():
     spin_thread.daemon = True
     spin_thread.start()
     try:
-        mcp.run(transport="http", port=8000)
+        mcp.run(transport="http", port=8003)
     except KeyboardInterrupt:
         pass
     finally:

@@ -1,0 +1,15 @@
+
+service_configs:
+  get_status:
+    type: my_package/srv/GetStatus
+    description: Retrieve current robot system status.
+
+action_configs:
+  navigate_to:
+    type: my_package/action/Navigate
+    description: Navigate the robot to a given target pose.
+
+topic_configs:
+  status:
+    type: my_package/msg/Status
+    description: Get the latest system status message.

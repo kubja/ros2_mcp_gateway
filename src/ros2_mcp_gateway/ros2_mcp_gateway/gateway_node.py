@@ -23,6 +23,7 @@ class MCPGateway(Node):
         self.mcp_services = {}
         self.mcp_actions = {}
         self.mcp_latest_msgs = {}
+        self.shutdown_event = threading.Event()
         self._create_clients()
         self._subscribe_topics()
 
@@ -155,10 +156,18 @@ def main():
     spin_thread = threading.Thread(target=ros_spin, args=(ros_node,))
     spin_thread.daemon = True
     spin_thread.start()
-    mcp.run(transport="http")
+    try:
+        mcp.run(transport="http", port=8001)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        ros_node.shutdown_event.set()
+        spin_thread.join()
+        rclpy.shutdown()
 
 def ros_spin(node):
-    rclpy.spin(node)
+    while rclpy.ok() and not node.shutdown_event.is_set():
+        rclpy.spin_once(node, timeout_sec=0.1)
 
 
 if __name__ == '__main__':

@@ -8,9 +8,7 @@ from fastmcp import FastMCP
 import sys
 import os
 
-print(f"Python Executable: {sys.executable}")
-print(f"sys.path: {sys.path}")
-print(f"PYTHONPATH: {os.environ.get('PYTHONPATH')}")
+
 
 mcp = FastMCP("ROS2 MCP Gateway")
 
@@ -157,7 +155,7 @@ def main():
     spin_thread.daemon = True
     spin_thread.start()
     try:
-        mcp.run(transport="http", port=8001)
+        mcp.run(transport="http", port=8000)
     except KeyboardInterrupt:
         pass
     finally:

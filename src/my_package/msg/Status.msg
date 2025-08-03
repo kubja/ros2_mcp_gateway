@@ -1,1 +1,4 @@
-string status
+std_msgs/Header header
+geometry_msgs/PoseStamped current_pose
+float32 battery_level
+bool is_charging

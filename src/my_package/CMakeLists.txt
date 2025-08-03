@@ -15,11 +15,24 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
+find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/Status.msg"
   "srv/GetStatus.srv"
   "action/Navigate.action"
+  DEPENDENCIES std_msgs geometry_msgs
+)
+
+install(PROGRAMS
+  my_package/mock_node.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  launch/
+  DESTINATION share/${PROJECT_NAME}/launch
 )
 
 ament_package()

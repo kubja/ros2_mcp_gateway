@@ -142,7 +142,7 @@ def main():
     spin_thread.daemon = True
     spin_thread.start()
     try:
-        mcp.run(transport="http", port=8003)
+        mcp.run(transport="http", port=8000)
     except KeyboardInterrupt:
         pass
     finally:

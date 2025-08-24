@@ -74,7 +74,7 @@ To run the `ros2_mcp_gateway` node with the YAML configuration:
     ```bash
     ros2 launch ros2_mcp_gateway mcp_gateway.launch.py
     ```
-    The server will start on `http://127.0.0.1:8003/mcp/` (or the port configured in `gateway_node.py`).
+    The server will start on `http://127.0.0.1:8000/mcp/` (or the port configured in `gateway_node.py`).
 
 ## Testing the Server
 
@@ -88,7 +88,7 @@ async def main():
     # Connect to the FastMCP server running on HTTP
     # The default port for FastMCP HTTP transport is 8003 (as configured)
     # and the default path is /mcp
-    async with Client("http://localhost:8003/mcp") as client:
+    async with Client("http://localhost:8000/mcp") as client:
         print("Connected to FastMCP server.")
         tools = await client.list_tools()
         print("Available tools:")

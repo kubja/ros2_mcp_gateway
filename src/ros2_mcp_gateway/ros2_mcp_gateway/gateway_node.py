@@ -7,6 +7,7 @@ from typing import Dict, Any
 from fastmcp import FastMCP
 import sys
 import os
+import yaml
 
 
 
@@ -15,13 +16,9 @@ mcp = FastMCP("ROS2 MCP Gateway")
 class MCPGateway(Node):
     def __init__(self, name: str):
         super().__init__(name)
-        self.declare_parameter('service_configs', '{}')
-        self.declare_parameter('action_configs', '{}')
-        self.declare_parameter('topic_configs', '{}')
-
-        self.service_configs = self.get_parameter('service_configs').value
-        self.action_configs = self.get_parameter('action_configs').value
-        self.topic_configs = self.get_parameter('topic_configs').value
+        self.service_configs = config_data.get('service_configs', {})
+        self.action_configs = config_data.get('action_configs', {})
+        self.topic_configs = config_data.get('topic_configs', {})
         self.mcp_services = {}
         self.mcp_actions = {}
         self.mcp_latest_msgs = {}

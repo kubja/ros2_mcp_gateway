@@ -16,6 +16,6 @@ def generate_launch_description():
             executable='gateway_node',
             name='mcp_gateway',
             output='screen',
-            parameters=[config]
+            parameters=[{'config_file': config}]
         )
     ])

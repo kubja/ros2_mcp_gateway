@@ -26,6 +26,20 @@ def ros_message_to_dict(msg):
             d[field] = value
     return d
 
+def rclpy_future_to_concurrent_future(rclpy_future, loop):
+    """Converts an rclpy.task.Future to a concurrent.futures.Future."""
+    concurrent_future = asyncio.Future()
+
+    def on_done(rclpy_future):
+        try:
+            result = rclpy_future.result()
+            loop.call_soon_threadsafe(concurrent_future.set_result, result)
+        except Exception as e:
+            loop.call_soon_threadsafe(concurrent_future.set_exception, e)
+
+    rclpy_future.add_done_callback(on_done)
+    return concurrent_future
+
 mcp = FastMCP("ROS2 MCP Gateway")
 
 class MCPGateway(Node):
@@ -92,9 +106,10 @@ class MCPGateway(Node):
             setattr(req, key, val)
 
         try:
-            future = client.call_async(req)
-            await asyncio.wait_for(asyncio.wrap_future(future), timeout=3.0)
-            return ros_message_to_dict(future.result())
+            rclpy_future = client.call_async(req)
+            concurrent_future = rclpy_future_to_concurrent_future(rclpy_future, asyncio.get_running_loop())
+            await asyncio.wait_for(concurrent_future, timeout=3.0)
+            return ros_message_to_dict(concurrent_future.result())
         except asyncio.TimeoutError:
             self.get_logger().error(f'Service {name} call timed out after 3 seconds.')
             return {"error": f"Service call to {name} timed out."}

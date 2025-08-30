@@ -10,6 +10,21 @@ import os
 import yaml
 
 
+def ros_message_to_dict(msg):
+    """Convert a ROS message to a dictionary."""
+    if not hasattr(msg, 'get_fields_and_field_types'):
+        return msg
+
+    d = {}
+    for field, field_type in msg.get_fields_and_field_types().items():
+        value = getattr(msg, field)
+        if hasattr(value, 'get_fields_and_field_types'):
+            d[field] = ros_message_to_dict(value)
+        elif isinstance(value, list):
+            d[field] = [ros_message_to_dict(v) if hasattr(v, 'get_fields_and_field_types') else v for v in value]
+        else:
+            d[field] = value
+    return d
 
 mcp = FastMCP("ROS2 MCP Gateway")
 
@@ -72,14 +87,14 @@ class MCPGateway(Node):
         while not client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info(f'Service {name} not available, waiting...')
 
-        req_type = type(client.srv_type)()
+        req = client.srv_type.Request()
         for key, val in args.items():
-            setattr(req_type, key, val)
+            setattr(req, key, val)
 
         try:
-            future = client.call_async(req_type)
+            future = client.call_async(req)
             await asyncio.wait_for(asyncio.wrap_future(future), timeout=3.0)
-            return future.result().__dict__
+            return ros_message_to_dict(future.result())
         except asyncio.TimeoutError:
             self.get_logger().error(f'Service {name} call timed out after 3 seconds.')
             return {"error": f"Service call to {name} timed out."}
@@ -94,7 +109,7 @@ class MCPGateway(Node):
         for key, val in args.items():
             setattr(goal_msg, key, val)
 
-        future = client.send_goal_async(goal_msg, feedback_callback=lambda fb: stream_queue.put_nowait({"type": "progress", "feedback": fb.feedback.__dict__}))
+        future = client.send_goal_async(goal_msg, feedback_callback=lambda fb: stream_queue.put_nowait({"type": "progress", "feedback": ros_message_to_dict(fb.feedback)}))
         goal_handle = await future
 
         if not goal_handle.accepted:
@@ -103,7 +118,7 @@ class MCPGateway(Node):
 
         result_future = goal_handle.get_result_async()
         result = await result_future
-        await stream_queue.put({"type": "result", "result": result.result.__dict__})
+        await stream_queue.put({"type": "result", "result": ros_message_to_dict(result.result)})
 
     async def get_latest_topic(self, name: str) -> Dict[str, Any]:
         self.get_logger().info(f"Getting latest message for topic: {name}")
@@ -111,7 +126,7 @@ class MCPGateway(Node):
         if msg is None:
             self.get_logger().warn(f"No message received yet for topic: {name}")
             return {"error": "No message received yet."}
-        return msg.__dict__
+        return ros_message_to_dict(msg)
 
 
 # Global placeholder for ROS node

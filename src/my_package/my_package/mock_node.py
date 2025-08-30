@@ -61,11 +61,11 @@ class MockNode(Node):
         self.get_logger().info(f'Publishing Status: {{msg.current_pose.pose.position.x}}, {{msg.battery_level}}')
 
     def control_command_callback(self, msg):
-        self.get_logger().info(f'Received Control Command: "{{msg.data}}"')
+        self.get_logger().info(f'Received Control Command: "{msg.data}"')
         # In a real application, process the command here
 
     def get_status_callback(self, request, response):
-        self.get_logger().info(f'Received GetStatus request for robot_id: {{request.robot_id}}')
+        self.get_logger().info('Received GetStatus request.')
         response.status.header.stamp = self.get_clock().now().to_msg()
         response.status.header.frame_id = 'mock_frame'
         response.status.current_pose.pose.position.x = 10.0

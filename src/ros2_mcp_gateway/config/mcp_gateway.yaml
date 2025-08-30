@@ -1,15 +1,19 @@
+mcp_gateway:
+  ros__parameters:
+    service_configs:
+      get_status:
+        type: my_package/srv/GetStatus
+        name: my_package/get_status
+        description: Retrieve current robot system status.
 
-service_configs:
-  get_status:
-    type: my_package/srv/GetStatus
-    description: Retrieve current robot system status.
+    action_configs:
+      navigate_to:
+        type: my_package/action/Navigate
+        name: my_package/navigate
+        description: Navigate the robot to a given target pose.
 
-action_configs:
-  navigate_to:
-    type: my_package/action/Navigate
-    description: Navigate the robot to a given target pose.
-
-topic_configs:
-  status:
-    type: my_package/msg/Status
-    description: Get the latest system status message.
+    topic_configs:
+      status:
+        type: my_package/msg/Status
+        name: my_package/status
+        description: Get the latest system status message.

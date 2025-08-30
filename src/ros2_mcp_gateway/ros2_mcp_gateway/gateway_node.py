@@ -16,6 +16,20 @@ mcp = FastMCP("ROS2 MCP Gateway")
 class MCPGateway(Node):
     def __init__(self, name: str):
         super().__init__(name)
+
+        self.declare_parameter('config_file', '')
+        config_file = self.get_parameter('config_file').get_parameter_value().string_value
+
+        if not config_file or not os.path.exists(config_file):
+            self.get_logger().error(f"Config file not found or not specified: {config_file}")
+            config_data = {}
+        else:
+            with open(config_file, 'r') as f:
+                config_data = yaml.safe_load(f)
+
+        if 'mcp_gateway' in config_data:
+            config_data = config_data['mcp_gateway']['ros__parameters']
+
         self.service_configs = config_data.get('service_configs', {})
         self.action_configs = config_data.get('action_configs', {})
         self.topic_configs = config_data.get('topic_configs', {})
@@ -32,24 +46,26 @@ class MCPGateway(Node):
 
         for name, meta in self.service_configs.items():
             srv_type = get_service(meta['type'])
-            client = self.create_client(srv_type, name)
+            client = self.create_client(srv_type, meta['name'])
             self.mcp_services[name] = client
 
         for name, meta in self.action_configs.items():
             action_type = get_action(meta['type'])
             from rclpy.action import ActionClient
-            client = ActionClient(self, action_type, name)
+            client = ActionClient(self, action_type, meta['name'])
             self.mcp_actions[name] = client
 
     def _subscribe_topics(self):
         from rosidl_runtime_py.utilities import get_message
         for topic_name, meta in self.topic_configs.items():
+            self.get_logger().info(f"Subscribing to topic: {topic_name}")
             msg_type = get_message(meta['type'])
 
             def callback(msg, topic_name=topic_name):
+                self.get_logger().info(f"Received message on topic: {topic_name}")
                 self.mcp_latest_msgs[topic_name] = msg
 
-            self.create_subscription(msg_type, topic_name, callback, 10)
+            self.create_subscription(msg_type, meta['name'], callback, 10)
 
     async def call_service(self, name: str, args: Dict[str, Any]) -> Dict:
         client = self.mcp_services[name]
@@ -90,8 +106,10 @@ class MCPGateway(Node):
         await stream_queue.put({"type": "result", "result": result.result.__dict__})
 
     async def get_latest_topic(self, name: str) -> Dict[str, Any]:
+        self.get_logger().info(f"Getting latest message for topic: {name}")
         msg = self.mcp_latest_msgs.get(name)
         if msg is None:
+            self.get_logger().warn(f"No message received yet for topic: {name}")
             return {"error": "No message received yet."}
         return msg.__dict__
 
@@ -110,6 +128,7 @@ def main():
     def create_service_tool(name, meta):
         @mcp.tool(name=name, description=meta['description'])
         async def service_tool(args: Dict[str, Any]) -> Dict:
+            print("Calling service " + name)
             return await ros_node.call_service(name, args)
         return service_tool
 

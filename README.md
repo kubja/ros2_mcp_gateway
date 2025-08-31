@@ -1,115 +1,92 @@
-# ROS2 MCP Gateway
+ROS2 MCP Gateway
 
-A gateway that exposes a robot's services, actions, and topics as MCP (Model Context Protocol) tools, allowing agents to interact with your ROS2 robot via MCP.
+The ROS2 MCP Gateway bridges ROS 2 with the Model Context Protocol (MCP), allowing agents to interact with robot capabilities through a standard interface. It enables high-level planning and reasoning by LLM-based agents, while leveraging ROS 2 for deterministic execution, low-level control, and reliable timing.
 
-## Features
+Why?
 
-*   **ROS2 Integration:** Seamlessly bridges ROS2 communication with FastMCP.
-*   **Configurable Interfaces:** Services, actions, and topics to be exposed are configurable via a YAML file.
-*   **HTTP Transport:** Communicates over HTTP for broad compatibility.
-*   **Graceful Shutdown:** Supports clean shutdown using CTRL+C.
-*   **Python Virtual Environment:** Manages Python dependencies in an isolated environment.
+LLM agents are getting increasingly capable at semantic reasoning and high-level planning, but they still struggle with:
 
-## Setup and Installation
+Precise timing
 
-Follow these steps to set up and build the `ros2_mcp_gateway` workspace:
+Low-level control
 
-1.  **Navigate to the Workspace:**
-    ```bash
-    cd /home/jakub/code/ros2_mcp_gateway
-    ```
+Deterministic execution
 
-2.  **Create and Activate Python Virtual Environment:**
-    ```bash
-    python3 -m venv .venv
-    source .venv/bin/activate
-    ```
+ROS 2, on the other hand, excels at these. With LLM agents becoming part of the robot, the gateway connects both worlds by letting ROS 2 handle deterministic execution and timing while agents focus on reasoning and planning. This combination allows robots to benefit from both LLM intelligence and ROS 2 reliability.
 
-3.  **Install Python Dependencies:**
-    ```bash
-    pip install fastmcp
-    ```
+Features and How it Works
 
-4.  **Build the ROS2 Workspace:**
-    ```bash
-    colcon build
-    ```
+Provides configurable mapping of ROS 2 interfaces into agent-usable abstractions: Exposes ROS 2 services, actions, and topics as MCP-accessible planning capabilities 
 
-## Configuration
+Maps any ROS 2 actions/services to agent-usable tools with context via simple YAML
 
-The services, actions, and topics exposed by the gateway are configured via the `mcp_gateway.yaml` file located in the `config` directory of the `ros2_mcp_gateway` package.
+Uses JSON-RPC 2.0 over stdio/HTTP with optional SSE streaming
 
-**`src/ros2_mcp_gateway/config/mcp_gateway.yaml` example:**
+Supports stateful tool execution for multi-step processes
 
-```yaml
-service_configs:
-  get_status:
-    type: my_package/srv/GetStatus
-    description: Retrieve current robot system status.
+Handles stateful tool execution so agents can manage multi-step processes
 
-action_configs:
-  navigate_to:
-    type: my_package/action/Navigate
-    description: Navigate the robot to a given target pose.
+Includes predefined tools for the standard ROS 2 stack (e.g. nav2)
 
-topic_configs:
-  status:
-    type: my_package/msg/Status
-    description: Get the latest system status message.
-```
+Configuration
 
-You can modify this file to define the ROS2 interfaces you wish to expose as FastMCP tools.
+The services, actions, and topics exposed by the gateway are configured via ROS parameters. These can be specified directly or stored in a YAML file and loaded with roslaunch.
 
-## Running the Gateway
+Here is the structure of the configuration file:
 
-To run the `ros2_mcp_gateway` node with the YAML configuration:
+mcp_gateway:
+  ros__parameters:
+    service_configs:
+      <tool_name>:
+        type: "<package_name>/srv/<service_name>"
+        name: "/<topic_name>/<service_name>"
+        description: "<description_of_the_tool>"
+    action_configs:
+      <tool_name>:
+        type: "<package_name>/action/<action_name>"
+        name: "/<topic_name>/<action_name>"
+        description: "<description_of_the_tool>"
+    topic_configs:
+      <tool_name>:
+        type: "<package_name>/msg/<message_name>"
+        name: "/<topic_name>/<message_name>"
+        description: "<description_of_the_tool>"
 
-1.  **Activate the virtual environment and source ROS2 setup:**
-    ```bash
-    source .venv/bin/activate
-    source install/setup.bash
-    ```
+For a concrete example, see the mcp_gateway.yaml file in the src/ros2_mcp_gateway/config directory, which is configured to work with the provided mock package.
 
-2.  **Launch the gateway node:**
-    ```bash
-    ros2 launch ros2_mcp_gateway mcp_gateway.launch.py
-    ```
-    The server will start on `http://127.0.0.1:8000/mcp/` (or the port configured in `gateway_node.py`).
 
-## Testing the Server
 
-You can test the FastMCP server using a Python client. Save the following code as `test_client.py` in your project root:
+Sample agent: Gemini CLI
 
-```python
-import asyncio
-from fastmcp import Client
+Gemini CLI is an example of a generic multi-purpose agent that supports MCP. To use the ROS2 MCP Gateway with Gemini CLI, configure your CLI settings to include the gateway as a server. Here’s an example configuration to place in your .gemini/settings.json file:
 
-async def main():
-    # Connect to the FastMCP server running on HTTP
-    # The default port for FastMCP HTTP transport is 8003 (as configured)
-    # and the default path is /mcp
-    async with Client("http://localhost:8000/mcp") as client:
-        print("Connected to FastMCP server.")
-        tools = await client.list_tools()
-        print("Available tools:")
-        for tool in tools:
-            print(f"- {tool.name}: {tool.description}")
+{
+  "mcpServers": {
+    "ros2_gateway": {
+      "command": "venv/bin/python app.py",
+      "cwd": "<path_to_your_workspace>/ros2_mcp_gateway",
+      "timeout": 5000,
+      "httpUrl": "http://localhost:8000/mcp/"
+    }
+  }
+}
 
-if __name__ == "__main__":
-    asyncio.run(main())
-```
+Field Explanations
 
-To run the client:
+command: How to launch the MCP server. In this case, the Python app inside your venv.
 
-1.  **Ensure the `ros2_mcp_gateway` node is running.**
-2.  **Open a new terminal, activate your virtual environment, and run the client script:**
-    ```bash
-    source .venv/bin/activate
-    python test_client.py
-    ```
+cwd: The working directory where the gateway is located.
 
-This will connect to your running FastMCP server and print a list of the tools it exposes.
+timeout: Time (ms) to wait for the server to respond.
 
-## License
+httpUrl: The endpoint where the MCP server exposes HTTP.
 
-This project is licensed under the Apache-2.0 License.
+This lets Gemini agents access ROS 2 capabilities seamlessly through MCP.
+
+Roadmap
+
+Extend standard tool library (MoveIt!, Open-RMF, etc.)
+
+Add support for resources (maps, waypoints, etc.)
+
+MCP over Zenoh transport for edge deployments

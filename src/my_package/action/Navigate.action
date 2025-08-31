@@ -1,2 +1,6 @@
+geometry_msgs/Point goal_position
 ---
+bool success
 ---
+geometry_msgs/Point current_position
+float32 distance_to_goal

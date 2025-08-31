@@ -7,3 +7,5 @@ log/
 .venv/
 
 .gemini
+
+__pycache__/

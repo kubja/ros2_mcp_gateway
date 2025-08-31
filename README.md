@@ -1,6 +1,6 @@
 # ROS2 MCP Gateway
 
-The ROS2 MCP Gateway bridges ROS 2 with the Model Context Protocol (MCP), allowing agents to interact with robot capabilities through a standard interface. It enables high-level planning and reasoning by LLM-based agents, while leveraging ROS 2 for deterministic execution, low-level control, and reliable timing.
+The ROS2 MCP Gateway connects ROS 2 with the Model Context Protocol (MCP), providing a standardized interface for LLM-based agents to interact with robot capabilities. The agents can perform high-level planning and reasoning, while ROS 2 handles deterministic execution, low-level control, and precise timing, ensuring reliable and predictable robot behavior.
 
 
 ## MCP

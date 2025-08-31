@@ -3,11 +3,18 @@ from rclpy.node import Node
 import asyncio
 import threading
 import json
-from typing import Dict, Any
+from typing import Dict, Any, List
 from fastmcp import FastMCP
 import sys
 import os
 import yaml
+from geometry_msgs.msg import Point
+from rosidl_runtime_py.utilities import get_message
+from rosidl_runtime_py.utilities import get_service
+from rosidl_runtime_py.utilities import get_action
+import inspect
+import types
+from pydantic import create_model, BaseModel, Field
 
 
 def ros_message_to_dict(msg):
@@ -40,6 +47,238 @@ def rclpy_future_to_concurrent_future(rclpy_future, loop):
     rclpy_future.add_done_callback(on_done)
     return concurrent_future
 
+
+def ros_message_type_to_json_schema(ros_message_type):
+    """Converts a ROS message type to a JSON schema."""
+    schema = {"type": "object", "properties": {}, "required": []}
+    for field_name, field_type_string in ros_message_type.get_fields_and_field_types().items():
+        is_array = False
+        if field_type_string.endswith('[]'):
+            is_array = True
+            field_type_string = field_type_string[:-2] # Remove '[]'
+
+        # Handle basic types
+        if field_type_string in ['bool', 'byte', 'char', 'float32', 'float64', 'int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']:
+            prop = {"type": "number"} # All numeric types
+            if field_type_string == 'bool':
+                prop = {"type": "boolean"}
+        elif field_type_string == 'string':
+            prop = {"type": "string"}
+        elif field_type_string in ['time', 'duration']: # ROS specific types, treat as objects or strings
+            prop = {"type": "object", "properties": {"sec": {"type": "integer"}, "nanosec": {"type": "integer"}}}
+        else:
+            # Nested message type
+            try:
+                nested_msg_type = get_message(field_type_string)
+                prop = ros_message_type_to_json_schema(nested_msg_type)
+            except Exception:
+                # Fallback for unknown types, treat as generic object
+                prop = {"type": "object"}
+
+        if is_array:
+            prop = {"type": "array", "items": prop}
+
+        schema["properties"][field_name] = prop
+        schema["required"].append(field_name) # Assuming all fields are required for simplicity
+
+    return schema
+
+def convert_dict_to_ros_message(data: Dict, ros_message_type):
+    """Recursively converts a dictionary or Pydantic model to a ROS message object."""
+    ros_msg = ros_message_type()
+    for field_name, field_type_string in ros_message_type.get_fields_and_field_types().items():
+        if field_name not in data:
+            continue
+
+        value = data[field_name]
+
+        # If the value is a Pydantic model, convert it to a dictionary
+        if isinstance(value, BaseModel):
+            value = value.model_dump()
+
+        is_array = False
+        if field_type_string.endswith('[]'):
+            is_array = True
+            field_type_string = field_type_string[:-2]
+
+        if is_array:
+            nested_type = get_message(field_type_string)
+            converted_list = []
+            for item in value:
+                # If item is a Pydantic model, convert it to a dictionary first
+                if isinstance(item, BaseModel):
+                    item = item.model_dump()
+
+                if hasattr(nested_type, 'get_fields_and_field_types'): # It's a nested ROS message
+                    converted_list.append(convert_dict_to_ros_message(item, nested_type))
+                else:
+                    converted_list.append(item) # Basic type in array
+            setattr(ros_msg, field_name, converted_list)
+        elif hasattr(get_message(field_type_string), 'get_fields_and_field_types'): # Nested ROS message
+            nested_type = get_message(field_type_string)
+            setattr(ros_msg, field_name, convert_dict_to_ros_message(value, nested_type))
+        else: # Basic type
+            setattr(ros_msg, field_name, value)
+    return ros_msg
+
+
+def ros_message_type_to_pydantic_model(ros_message_type):
+    """Dynamically creates a Pydantic model from a ROS message type."""
+    fields = {}
+
+    for field_name, field_type_string in ros_message_type.get_fields_and_field_types().items():
+        is_array = False
+        if field_type_string.endswith('[]'):
+            is_array = True
+            field_type_string = field_type_string[:-2]
+
+        py_type = Any # Default to Any for unknown types or complex nested types
+
+        if field_type_string == 'bool':
+            py_type = bool
+        elif field_type_string == 'string':
+            py_type = str
+        elif field_type_string in ['float32', 'float64']:
+            py_type = float
+        elif field_type_string in ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']:
+            py_type = int
+        elif field_type_string in ['time', 'duration']:
+            py_type = Dict[str, int] # Represent time/duration as dicts
+        else:
+            # Nested message type, recursively create Pydantic model
+            try:
+                nested_msg_type = get_message(field_type_string)
+                py_type = ros_message_type_to_pydantic_model(nested_msg_type)
+            except Exception:
+                pass # Keep as Any if cannot resolve
+
+        if is_array:
+            py_type = List[py_type]
+
+        # Define the field with its type and a default value (or Field(...))
+        # Add title and description for better schema generation
+        fields[field_name] = (py_type, Field(..., title=field_name.replace('_', ' ').title(), description=f"The {field_name.replace('_', ' ').title()} coordinate."))
+
+    model_name = ros_message_type.__class__.__name__
+    if model_name == "Metaclass_Point":
+        model_name = "Point"
+
+    DynamicModel = create_model(model_name, **fields)
+    return DynamicModel
+
+
+def create_dynamic_action_tool_function(name, description, action_type, ros_node_instance):
+    """
+    Dynamically creates an async function for an MCP action tool.
+    The function signature is generated based on the ROS action's goal message.
+    """
+    goal_fields = action_type.Goal.get_fields_and_field_types()
+    
+    # Construct the function signature string
+    param_strings = []
+    for field_name, field_type_string in goal_fields.items():
+        # Convert ROS type string to Python type hint string
+        py_type_hint = "Any" # Default
+        if field_type_string == 'bool':
+            py_type_hint = "bool"
+        elif field_type_string == 'string':
+            py_type_hint = "str"
+        elif field_type_string in ['float32', 'float64']:
+            py_type_hint = "float"
+        elif field_type_string in ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']:
+            py_type_hint = "int"
+        elif field_type_string in ['time', 'duration']:
+            py_type_hint = "Dict[str, int]" # Represent time/duration as dicts
+        else:
+            # Nested message type, recursively create Pydantic model
+            try:
+                nested_ros_msg_type = get_message(field_type_string)
+                py_type_hint = ros_message_type_to_pydantic_model(nested_ros_msg_type).__name__ # Use the name of the Pydantic model
+
+            except Exception:
+                py_type_hint = "Any" # Fallback if model creation failed earlier or type is truly unknown
+
+        if field_type_string.endswith('[]'): # Handle arrays
+            py_type_hint = f"List[{py_type_hint}]"
+
+        param_strings.append(f"{field_name}: {py_type_hint}")
+    
+    signature_str = ", ".join(param_strings)
+
+    # Construct the function body
+    # Collect all dynamic arguments into an 'args' dictionary
+    args_collection_str = "args = {" + ", ".join([f"'{field_name}': {field_name}" for field_name in goal_fields.keys()]) + "}"
+
+    # The actual call to run_action
+    function_body = f"""
+async def {name}_tool({signature_str}):
+    {args_collection_str}
+    # Convert the dictionary args to the ROS action goal message type
+    ros_goal_msg = convert_dict_to_ros_message(args, action_type.Goal)
+    await ros_node_instance.run_action(name, ros_goal_msg, None) # Pass None for stream_queue
+"""
+    # Use exec to create the function
+    local_namespace = {
+        "ros_node_instance": ros_node_instance,
+        "name": name,
+        "action_type": action_type, # Pass action_type to local_namespace
+        "convert_dict_to_ros_message": convert_dict_to_ros_message,
+        "Dict": Dict,
+        "List": List,
+        "Any": Any,
+        "get_message": get_message, # Ensure get_message is available
+        "BaseModel": BaseModel, # Pass BaseModel for dynamic Pydantic model creation
+        "Field": Field, # Pass Field for dynamic Pydantic model creation
+        "create_model": create_model # Pass create_model for dynamic Pydantic model creation
+    }
+    # Pre-generate and add dynamically created Pydantic models to the local namespace
+    # This ensures they are available when constructing the function signature and during exec
+    for field_name, field_type_string in goal_fields.items():
+        # Determine the actual ROS message type for nested fields
+        if not field_type_string.endswith('[]') and not field_type_string in ['bool', 'string', 'float32', 'float64', 'int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64', 'time', 'duration']:
+            try:
+                nested_ros_msg_type = get_message(field_type_string)
+                # Removed DEBUG log statement
+                dynamic_model = ros_message_type_to_pydantic_model(nested_ros_msg_type)
+                local_namespace[dynamic_model.__name__] = dynamic_model
+            except Exception as e:
+                ros_node_instance.get_logger().warn(f"Could not create Pydantic model for {field_type_string}: {e}")
+                pass # Keep as Any if cannot resolve
+
+    # Construct the function signature string
+    param_strings = []
+    for field_name, field_type_string in goal_fields.items():
+        # Convert ROS type string to Python type hint string
+        py_type_hint = "Any" # Default
+        if field_type_string == 'bool':
+            py_type_hint = "bool"
+        elif field_type_string == 'string':
+            py_type_hint = "str"
+        elif field_type_string in ['float32', 'float64']:
+            py_type_hint = "float"
+        elif field_type_string in ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']:
+            py_type_hint = "int"
+        elif field_type_string in ['time', 'duration']:
+            py_type_hint = "Dict[str, int]" # Represent time/duration as dicts
+        else: # Assume nested messages are passed as dictionaries
+            # Use the dynamically created Pydantic model for nested types
+            try:
+                nested_ros_msg_type = get_message(field_type_string)
+                # Use the name of the Pydantic model, which should now be in local_namespace
+                py_type_hint = ros_message_type_to_pydantic_model(nested_ros_msg_type).__name__
+            except Exception:
+                py_type_hint = "Any" # Fallback if model creation failed earlier or type is truly unknown
+
+        if field_type_string.endswith('[]'): # Handle arrays
+            py_type_hint = f"List[{py_type_hint}]"
+
+        param_strings.append(f"{field_name}: {py_type_hint}")
+
+    exec(function_body, globals(), local_namespace)
+    
+    return local_namespace[f"{name}_tool"]
+
+
 mcp = FastMCP("ROS2 MCP Gateway")
 
 class MCPGateway(Node):
@@ -70,8 +309,6 @@ class MCPGateway(Node):
         self._subscribe_topics()
 
     def _create_clients(self):
-        from rosidl_runtime_py.utilities import get_service
-        from rosidl_runtime_py.utilities import get_action
 
         for name, meta in self.service_configs.items():
             srv_type = get_service(meta['type'])
@@ -82,7 +319,7 @@ class MCPGateway(Node):
             action_type = get_action(meta['type'])
             from rclpy.action import ActionClient
             client = ActionClient(self, action_type, meta['name'])
-            self.mcp_actions[name] = client
+            self.mcp_actions[name] = (client, action_type)
 
     def _subscribe_topics(self):
         from rosidl_runtime_py.utilities import get_message
@@ -116,11 +353,11 @@ class MCPGateway(Node):
 
     async def run_action(self, name: str, args: Dict[str, Any], stream_queue: asyncio.Queue):
         from rclpy.action import GoalResponse, CancelResponse
-        client = self.mcp_actions[name]
+        client, action_type = self.mcp_actions[name]
         while not client.wait_for_server(timeout_sec=1.0):
             self.get_logger().info(f'Action {name} not available, waiting...')
 
-        goal_msg = client.action_type.Goal()
+        goal_msg = action_type.Goal()
         for key, val in args.items():
             setattr(goal_msg, key, val)
 
@@ -134,6 +371,7 @@ class MCPGateway(Node):
         result_future = goal_handle.get_result_async()
         result = await result_future
         await stream_queue.put({"type": "result", "result": ros_message_to_dict(result.result)})
+
 
     async def get_latest_topic(self, name: str) -> Dict[str, Any]:
         self.get_logger().info(f"Getting latest message for topic: {name}")
@@ -166,10 +404,22 @@ def main():
         create_service_tool(name, meta)
 
     def create_action_tool(name, meta):
-        @mcp.tool(name=name, description=meta['description'], exclude_args=['stream_queue'])
-        async def action_tool(args: Dict[str, Any], stream_queue=None):
-            await ros_node.run_action(name, args, stream_queue)
-        return action_tool
+        print("Jakub log", name, meta)
+        action_type = get_action(meta['type'])
+        
+        # Dynamically create the action tool function
+        dynamic_action_tool_func = create_dynamic_action_tool_function(
+            name, meta['description'], action_type, ros_node
+        )
+
+        # Apply the mcp.tool decorator to the dynamically created function
+        # The decorator will infer parameters from the function's signature
+        decorated_tool = mcp.tool(
+            name=name,
+            description=meta['description']
+        )(dynamic_action_tool_func)
+        
+        return decorated_tool
 
     for name, meta in ros_node.action_configs.items():
         create_action_tool(name, meta)

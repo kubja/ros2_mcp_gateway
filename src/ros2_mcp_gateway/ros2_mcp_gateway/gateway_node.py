@@ -12,6 +12,7 @@ from rosidl_runtime_py.utilities import get_message, get_service, get_action
 from pydantic import create_model, BaseModel, Field
 import inspect
 from types import FunctionType
+import importlib
 
 # ---------------- ROS Utilities ----------------
 
@@ -42,6 +43,64 @@ def rclpy_future_to_concurrent_future(rclpy_future, loop):
     rclpy_future.add_done_callback(on_done)
     return concurrent_future
 
+import importlib
+from rosidl_runtime_py.utilities import get_message, get_service, get_action
+from pydantic import create_model, BaseModel, Field
+from typing import Dict, Any, List
+
+def ros_message_type_to_pydantic_model(ros_message_type):
+    """Create Pydantic model from ROS message type."""
+    fields = {}
+    for field_name, field_type_string in ros_message_type.get_fields_and_field_types().items():
+        is_array = field_type_string.endswith('[]')
+        if is_array:
+            field_type_string = field_type_string[:-2]
+            
+        py_type = Any
+        
+        # Check for primitive ROS types first
+        if field_type_string == 'bool':
+            py_type = bool
+        elif field_type_string == 'string':
+            py_type = str
+        elif field_type_string in ['float32', 'float64']:
+            py_type = float
+        elif field_type_string in ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']:
+            py_type = int
+        elif field_type_string in ['time', 'duration']:
+            py_type = Dict[str, int]
+        # Check if it's a message type from another package
+        elif '/' in field_type_string:
+            try:
+                # Try to get the message from a known package
+                nested_type = get_message(field_type_string)
+                py_type = ros_message_type_to_pydantic_model(nested_type)
+            except (ValueError, AttributeError):
+                # If that fails, try dynamic import
+                try:
+                    pkg, msg_name = field_type_string.split('/')
+                    module = importlib.import_module(f"{pkg}.msg")
+                    nested_type = getattr(module, msg_name)
+                    py_type = ros_message_type_to_pydantic_model(nested_type)
+                except (ImportError, AttributeError):
+                    # Fallback to Any if type cannot be resolved
+                    py_type = Any
+        # Fallback for types in the same package or other unhandled cases
+        else:
+            try:
+                nested_type = get_message(field_type_string)
+                py_type = ros_message_type_to_pydantic_model(nested_type)
+            except (ValueError, AttributeError):
+                py_type = Any
+                
+        if is_array:
+            py_type = List[py_type]
+            
+        fields[field_name] = (py_type, Field(...))
+    
+    model_name = ros_message_type.__name__ if hasattr(ros_message_type, '__name__') else 'DynamicModel'
+    return create_model(model_name, **fields)
+
 def convert_dict_to_ros_message(data: Dict, ros_message_type):
     """Convert dictionary/Pydantic model to ROS message recursively."""
     ros_msg = ros_message_type()
@@ -59,43 +118,14 @@ def convert_dict_to_ros_message(data: Dict, ros_message_type):
                 convert_dict_to_ros_message(item, nested_type) if hasattr(nested_type, 'get_fields_and_field_types') else item
                 for item in value
             ])
-        elif hasattr(get_message(field_type_string), 'get_fields_and_field_types'):
-            nested_type = get_message(field_type_string)
+        elif '/' in field_type_string:
+            nested_type_str = field_type_string.split('/')
+            module = importlib.import_module(f"{nested_type_str[0]}.msg")
+            nested_type = getattr(module, nested_type_str[1])
             setattr(ros_msg, field_name, convert_dict_to_ros_message(value, nested_type))
         else:
             setattr(ros_msg, field_name, value)
     return ros_msg
-
-def ros_message_type_to_pydantic_model(ros_message_type):
-    """Create Pydantic model from ROS message type."""
-    fields = {}
-    for field_name, field_type_string in ros_message_type.get_fields_and_field_types().items():
-        is_array = field_type_string.endswith('[]')
-        if is_array:
-            field_type_string = field_type_string[:-2]
-        py_type = Any
-        if field_type_string == 'bool':
-            py_type = bool
-        elif field_type_string == 'string':
-            py_type = str
-        elif field_type_string in ['float32', 'float64']:
-            py_type = float
-        elif field_type_string in ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']:
-            py_type = int
-        elif field_type_string in ['time', 'duration']:
-            py_type = Dict[str, int]
-        else:
-            try:
-                nested_type = get_message(field_type_string)
-                py_type = ros_message_type_to_pydantic_model(nested_type)
-            except Exception:
-                pass
-        if is_array:
-            py_type = List[py_type]
-        fields[field_name] = (py_type, Field(...))
-    model_name = ros_message_type.__name__ if hasattr(ros_message_type, '__name__') else 'DynamicModel'
-    return create_model(model_name, **fields)
-
 # ---------------- MCP Gateway Node ----------------
 
 mcp = FastMCP("ROS2 MCP Gateway")
@@ -145,9 +175,7 @@ class MCPGateway(Node):
         client = self.mcp_services[name]
         while not client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info(f'Service {name} not available, waiting...')
-        req = client.srv_type.Request()
-        for key, val in args.items():
-            setattr(req, key, val)
+        req = convert_dict_to_ros_message(args, client.srv_type.Request)
         try:
             rclpy_future = client.call_async(req)
             concurrent_future = rclpy_future_to_concurrent_future(rclpy_future, asyncio.get_running_loop())
@@ -161,9 +189,7 @@ class MCPGateway(Node):
         client, action_type = self.mcp_actions[name]
         while not client.wait_for_server(timeout_sec=1.0):
             self.get_logger().info(f'Action {name} not available, waiting...')
-        goal_msg = action_type.Goal()
-        for key, val in args.items():
-            setattr(goal_msg, key, val)
+        goal_msg = convert_dict_to_ros_message(args, action_type.Goal)
         future = client.send_goal_async(
             goal_msg,
             feedback_callback=lambda fb: stream_queue.put_nowait({"type":"progress","feedback":ros_message_to_dict(fb.feedback)})
@@ -190,37 +216,36 @@ def ros_spin(node: MCPGateway):
     while rclpy.ok() and not node.shutdown_event.is_set():
         rclpy.spin_once(node, timeout_sec=0.1)
 
-def create_service_tool_function(name: str, ros_node: MCPGateway, fields: Dict[str, Any], description: str):
-    args_str = ", ".join(fields.keys())
-    func_code = f"""
-async def {name}_tool({args_str}):
-    args = {{{', '.join([f"'{k}': {k}" for k in fields.keys()])}}}
-    return await ros_node.call_service("{name}", args)
-"""
-    namespace = {"ros_node": ros_node}
-    exec(func_code, namespace)
-    func = namespace[f"{name}_tool"]
-    func.__doc__ = description
-    return func
+def create_service_tool_function(name: str, ros_node: MCPGateway, request_model, description: str):
+    async def service_tool(request: request_model):
+        """{description}"""
+        return await ros_node.call_service(name, request.model_dump())
+    
+    # FastMCP uses the function's __name__ for the tool name, so we must set it.
+    # We will use the description from the docstring.
+    service_tool.__name__ = name
+    service_tool.__doc__ = description
+    
+    return service_tool
 
-def create_action_tool_function(name: str, ros_node: MCPGateway, action_type, description: str):
-    goal_fields = action_type.Goal.get_fields_and_field_types()
-    args_str = ", ".join(goal_fields.keys())
-    func_code = f"""
-async def {name}_tool({args_str}):
-    args = {{{', '.join([f"'{k}': {k}" for k in goal_fields.keys()])}}}
-    await ros_node.run_action("{name}", args, None)
-"""
-    namespace = {"ros_node": ros_node}
-    exec(func_code, namespace)
-    func = namespace[f"{name}_tool"]
-    func.__doc__ = description
-    return func
+def create_action_tool_function(name: str, ros_node: MCPGateway, goal_model, description: str):
+    async def action_tool(goal: goal_model):
+        """{description}"""
+        await ros_node.run_action(name, goal.model_dump(), None)
+    
+    action_tool.__name__ = name
+    action_tool.__doc__ = description
+    
+    return action_tool
 
 def create_topic_tool_function(name: str, ros_node: MCPGateway, description: str):
     async def topic_tool():
+        """{description}"""
         return await ros_node.get_latest_topic(name)
+    
+    topic_tool.__name__ = name
     topic_tool.__doc__ = description
+    
     return topic_tool
 
 # ---------------- Main ----------------
@@ -233,20 +258,21 @@ def main():
     # Service tools
     for name, meta in ros_node.service_configs.items():
         srv_type = get_service(meta['type'])
-        fields = srv_type.Request.get_fields_and_field_types()
-        func = create_service_tool_function(name, ros_node, fields, meta.get('description', ''))
-        mcp.tool(name=name, description=meta.get('description', ''))(func)
+        request_model = ros_message_type_to_pydantic_model(srv_type.Request)
+        func = create_service_tool_function(name, ros_node, request_model, meta.get('description', ''))
+        mcp.tool()(func)
 
     # Action tools
     for name, meta in ros_node.action_configs.items():
         action_type = get_action(meta['type'])
-        func = create_action_tool_function(name, ros_node, action_type, meta.get('description', ''))
-        mcp.tool(name=name, description=meta.get('description', ''))(func)
+        goal_model = ros_message_type_to_pydantic_model(action_type.Goal)
+        func = create_action_tool_function(name, ros_node, goal_model, meta.get('description', ''))
+        mcp.tool()(func)
 
     # Topic tools
     for name, meta in ros_node.topic_configs.items():
         func = create_topic_tool_function(name, ros_node, meta.get('description', ''))
-        mcp.tool(name=name, description=meta.get('description', ''))(func)
+        mcp.tool()(func)
 
     # Start ROS spin in thread
     spin_thread = threading.Thread(target=ros_spin, args=(ros_node,))

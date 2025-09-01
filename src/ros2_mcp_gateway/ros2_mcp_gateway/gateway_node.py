@@ -50,51 +50,51 @@ from typing import Dict, Any, List
 
 def ros_message_type_to_pydantic_model(ros_message_type):
     """Create Pydantic model from ROS message type."""
+    global ros_node
     fields = {}
     for field_name, field_type_string in ros_message_type.get_fields_and_field_types().items():
         is_array = field_type_string.endswith('[]')
         if is_array:
             field_type_string = field_type_string[:-2]
-            
+        
         py_type = Any
         
-        # Check for primitive ROS types first
+        # Determine the Python type based on the ROS field type string
         if field_type_string == 'bool':
             py_type = bool
         elif field_type_string == 'string':
             py_type = str
-        elif field_type_string in ['float32', 'float64']:
+        elif field_type_string in ['float32', 'float64', 'double']:
             py_type = float
         elif field_type_string in ['int8', 'uint8', 'int16', 'uint16', 'int32', 'uint32', 'int64', 'uint64']:
             py_type = int
         elif field_type_string in ['time', 'duration']:
             py_type = Dict[str, int]
-        # Check if it's a message type from another package
-        elif '/' in field_type_string:
+        else:
+            # Handle nested message types (either from the same or a different package)
             try:
-                # Try to get the message from a known package
+                # First try to get the message, which handles both current and other packages
                 nested_type = get_message(field_type_string)
                 py_type = ros_message_type_to_pydantic_model(nested_type)
             except (ValueError, AttributeError):
-                # If that fails, try dynamic import
+                # If get_message fails, try explicit import
                 try:
                     pkg, msg_name = field_type_string.split('/')
                     module = importlib.import_module(f"{pkg}.msg")
                     nested_type = getattr(module, msg_name)
                     py_type = ros_message_type_to_pydantic_model(nested_type)
-                except (ImportError, AttributeError):
-                    # Fallback to Any if type cannot be resolved
+                except (ImportError, AttributeError, ValueError):
+                    # Final fallback if type cannot be resolved
+                    logging.warning(
+                        f"Could not resolve nested ROS message type: {field_type_string}. "
+                        "Falling back to `Any`."
+                    )
                     py_type = Any
-        # Fallback for types in the same package or other unhandled cases
-        else:
-            try:
-                nested_type = get_message(field_type_string)
-                py_type = ros_message_type_to_pydantic_model(nested_type)
-            except (ValueError, AttributeError):
-                py_type = Any
                 
         if is_array:
             py_type = List[py_type]
+        
+        ros_node.get_logger().info(f"Field '{field_name}' (ROS type: {field_type_string}) resolved to Python type: {py_type}")
             
         fields[field_name] = (py_type, Field(...))
     
@@ -255,6 +255,8 @@ def main():
     rclpy.init()
     ros_node = MCPGateway("ros2_mcp_gateway")
 
+    ros_node.get_logger().info("starting")
+
     # Service tools
     for name, meta in ros_node.service_configs.items():
         srv_type = get_service(meta['type'])
@@ -264,8 +266,10 @@ def main():
 
     # Action tools
     for name, meta in ros_node.action_configs.items():
+        ros_node.get_logger().info("action " + name)
         action_type = get_action(meta['type'])
         goal_model = ros_message_type_to_pydantic_model(action_type.Goal)
+        ros_node.get_logger().info(f"Action '{name}' Goal Model Schema: {json.dumps(goal_model.model_json_schema(), indent=2)}")
         func = create_action_tool_function(name, ros_node, goal_model, meta.get('description', ''))
         mcp.tool()(func)
 
